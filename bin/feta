@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+
+die() {
+    printf '%s\n' "$1" >&2
+    exit 1
+}
+
+read_subjects() { exiftool -b "-$tag_subject" -- "$1" ; }
+
+exiftool_do() { exiftool "${exiftool_opt[@]}" "$@" ; }
+
+info() { exiftool -s -s "-$tag_title" "-$tag_subject" "-$tag_desc" -- "$1" ; }
+
+menu() { rofi -dmenu -p "$1" -i -multi-select ; }
+
+assert_file() { [[ -f "$1" ]] || die "Invalid file: $1" ; }
+
+add_to_subject_list() {
+    [[ -f "$subject_list" ]] || return
+    local i
+    for i in "$@"; do
+        grep --fixed-strings --quiet --line-regexp -- \
+            "$i" "$subject_list" || printf "%s\n" "$i" >> "$subject_list"
+    done;
+}
+
+set_title() {
+    local file=$1;
+    local title=$2;
+    assert_file "$file"
+    exiftool_do "-$tag_title=$title" -- "$file"
+}
+
+prompt_set_title() {
+    set_title "$1" "$(menu "Set Title")"
+}
+
+set_desc() {
+    local file=$1;
+    local desc=$2;
+    assert_file "$file"
+    exiftool_do "-$tag_desc=$desc" -- "$file"
+}
+
+prompt_set_desc() {
+    set_desc "$1" "$(menu "Set Description")"
+}
+
+add_subjects() {
+    local file=$1; shift
+    local subjects=()
+    local i
+    assert_file "$file"
+    for i in "$@"; do
+        subjects+=("-if" "not \$$tag_subject or not \$$tag_subject =~ /$i/")
+        subjects+=("-$tag_subject+=$i")
+        subjects+=("-execute")
+    done;
+    unset 'subjects[-1]'
+    exiftool_do "${subjects[@]}" -common_args "$file"
+}
+
+set_subjects() {
+    local file=$1; shift
+    local subjects=()
+    local i
+    assert_file "$file"
+    for i in "$@"; do subjects+=("-$tag_subject=$i"); done;
+    exiftool_do "${subjects[@]}" -- "$file"
+}
+
+rm_subjects() {
+    local file=$1; shift
+    local subjects=()
+    local i
+    assert_file "$file"
+    for i in "$@"; do subjects+=("-$tag_subject-=$i"); done;
+    exiftool_do "${subjects[@]}" -- "$file"
+}
+
+_additional_subjects() {
+    local file=$1
+    if [[ -f "$subject_list" ]]; then
+        sort < "$subject_list" | comm -23 - <(read_subjects "$file" | sort)
+    fi
+}
+
+_all_subjects() {
+    local file=$1
+    {
+        read_subjects "$file"
+        printf '\n'
+        [[ -f "$subject_list" ]] && cat -- "$subject_list"
+    } | sort | uniq
+}
+
+prompt_add_subjects() {
+    local file="$1"
+    local subjects
+    assert_file "$file"
+    mapfile -t subjects < <(_additional_subjects "$file" | menu "Add Subjects:")
+    if [[ ${#subjects[@]} -gt 0 ]]; then
+        add_to_subject_list "${subjects[@]}"
+        add_subjects "$file" "${subjects[@]}"
+    fi
+}
+
+prompt_set_subjects() {
+    local file="$1"
+    local subjects
+    assert_file "$file"
+    mapfile -t subjects < <(_all_subjects "$file" | menu "Set Subjects:")
+    if [[ ${#subjects[@]} -gt 0 ]]; then
+        add_to_subject_list "${subjects[@]}"
+        set_subjects "$file" "${subjects[@]}"
+    fi
+}
+
+prompt_rm_subjects() {
+    local file="$1"
+    local subjects
+    assert_file "$file"
+    mapfile -t subjects < <(read_subjects "$file" | menu "Remove Subjects: ")
+    if [[ ${#subjects[@]} -gt 0 ]]; then
+        rm_subjects "$file" "${subjects[@]}"
+    fi
+}
+
+
+run() {
+    feh \
+        --scale-down --auto-rotate -B black \
+        --draw-filename \
+        --draw-actions \
+        --draw-tinted \
+        --class feta \
+        --info "$0 info %F" \
+        --action1 ";[Set Subjects] $0 prompt-set-subjects %F" \
+        --action2 ";[Add Subjects] $0 prompt-add-subjects %F" \
+        --action3 ";[Rm Subjects]  $0 prompt-rm-subjects %F" \
+        --action4 ";[Set Title]    $0 prompt-set-title %F" \
+        --action5 ";[Set Desc]     $0 prompt-set-desc %F" \
+        "$@"
+}
+
+
+
+# Config Dirs
+data_home=${XDG_DATA_HOME:-$HOME/.local/share}
+config_home=${XDG_CONFIG_HOME:-$HOME/.config}
+config=${FETA_CONFIG:-$config_home/feta.cfg}
+
+
+# Defaults
+subject_list=$data_home/feta-subjects
+tag_subject=XMP-dc:subject
+tag_title=XMP-dc:title
+tag_desc=XMP-dc:description
+exiftool_opt=()
+
+# Override defaults if config exists
+# shellcheck source=/dev/null
+[[ -f "$config" ]] && source "$config"
+
+# Settings
+# use ENV VAR if present
+subject_list=${FETA_SUBJECT_LIST:-$subject_list}
+tag_subject=${FETA_SUBJECT:-$tag_subject}
+tag_title=${FETA_TITLE:-$tag_title}
+tag_desc=${FETA_DESC:-$tag_desc}
+
+
+# main
+case $1 in
+    add-subjects|as)          shift; add_subjects "$@" ;;
+    set-subjects|ss)          shift; set_subjects "$@" ;;
+    rm-subjects|rs)           shift; rm_subjects "$@" ;;
+    prompt-add-subjects|pas)  shift; prompt_add_subjects "$@" ;;
+    prompt-set-subjects|pss)  shift; prompt_set_subjects "$@" ;;
+    prompt-rm-subjects|prs)   shift; prompt_rm_subjects "$@" ;;
+    set-title|st)             shift; set_title "$@" ;;
+    prompt-set-title|pst)     shift; prompt_set_title "$@" ;;
+    set-desc|sd)              shift; set_desc "$@" ;;
+    prompt-set-desc|psd)      shift; prompt_set_desc "$@" ;;
+    info|i)                   shift; info "$@" ;;
+    *)                        run "$@";;
+esac
